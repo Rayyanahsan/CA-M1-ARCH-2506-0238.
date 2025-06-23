@@ -1,0 +1,194 @@
+ Install necessary libraries
+!pip install -q opencv-python matplotlib torch torchvision
+!pip install -q git+https://github.com/facebookresearch/segment-anything.git
+!pip install -q git+https://github.com/ultralytics/ultralytics.git
+
+# Clone Segment Anything repo
+!git clone https://github.com/facebookresearch/segment-anything.git
+%cd segment-anything
+
+# Download SAM2 checkpoint
+!wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+
+# Import libraries
+import torch
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from segment_anything import sam_model_registry, SamPredictor
+from ultralytics import YOLO
+import os
+# Load SAM model
+sam_checkpoint = "sam_vit_b_01ec64.pth"
+model_type = "vit_b"
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+sam.to(device=device)
+predictor = SamPredictor(sam)
+
+# Load YOLO model
+yolo = YOLO("yolov8n.pt")  # Replace with YOLOv11 model if you have custom weights
+from google.colab import files
+import zipfile
+import os
+
+# Upload ZIP file
+uploaded = files.upload()
+
+# Get filename
+zip_filename = list(uploaded.keys())[0]
+
+# Extract contents to "dataset" folder
+with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
+    zip_ref.extractall("dataset")
+
+# Recursively find all image files
+image_files = []
+for root, dirs, files_in_dir in os.walk("dataset"):
+    for file in files_in_dir:
+        if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+            image_files.append(os.path.join(root, file))
+
+# Check if images were found
+if len(image_files) == 0:
+    print("❌ No image files found in the ZIP.")
+else:
+    print(f"✅ Found {len(image_files)} image(s). Showing the first one:")
+
+    # Show the first image
+    import cv2
+    import matplotlib.pyplot as plt
+
+    image = cv2.imread(image_files[0])
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    plt.imshow(image_rgb)
+    plt.axis('off')
+    plt.title("First Image from ZIP")
+    plt.show()
+# Make sure YOLO and SAM are already loaded as `yolo` and `predictor` from earlier cells
+
+for idx, image_path in enumerate(image_files):
+    print(f"🔍 Processing image {idx+1}/{len(image_files)}: {image_path}")
+
+    # Read and convert image
+    image = cv2.imread(image_path)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Run YOLOv8/YOLOv11
+    results = yolo(image_rgb)
+    boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
+
+    # Set image for SAM
+    predictor.set_image(image_rgb)
+
+    # Process each bounding box
+    for box_idx, box in enumerate(boxes):
+        x0, y0, x1, y1 = box
+        input_box = np.array([x0, y0, x1, y1])
+        masks, scores, logits = predictor.predict(box=input_box, multimask_output=True)
+
+        # Show each mask
+        for i, mask in enumerate(masks):
+            plt.figure(figsize=(5, 5))
+            plt.imshow(image_rgb)
+            plt.imshow(mask, alpha=0.6)
+            plt.title(f"Image {idx+1}, Box {box_idx+1}, Mask {i+1}, Score: {scores[i]:.2f}")
+            plt.axis("off")
+            plt.show()
+import os
+import cv2
+import pandas as pd
+
+# Create directory for saving masks
+os.makedirs("segmentation_results", exist_ok=True)
+
+# Collect info for all masks
+results_data = []
+
+for idx, image_path in enumerate(image_files):
+    print(f"💾 Saving masks for image {idx+1}/{len(image_files)}: {image_path}")
+
+    # Read and convert
+    image = cv2.imread(image_path)
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    filename = os.path.splitext(os.path.basename(image_path))[0]
+
+    # Run YOLO
+    results = yolo(image_rgb)
+    boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
+
+    # Set image for SAM
+    predictor.set_image(image_rgb)
+
+    for box_idx, box in enumerate(boxes):
+        x0, y0, x1, y1 = box
+        input_box = np.array([x0, y0, x1, y1])
+        masks, scores, _ = predictor.predict(box=input_box, multimask_output=True)
+
+        for i, mask in enumerate(masks):
+            # Generate mask filename
+            mask_filename = f"{filename}_box{box_idx+1}_mask{i+1}.png"
+            mask_path = os.path.join("segmentation_results", mask_filename)
+
+            # Convert and save mask
+            mask_image = (mask * 255).astype(np.uint8)
+            cv2.imwrite(mask_path, mask_image)
+
+            # Save info
+            results_data.append({
+                "image": filename,
+                "box_index": box_idx + 1,
+                "mask_index": i + 1,
+                "score": round(float(scores[i]), 4),
+                "mask_file": mask_filename,
+                "box": f"{x0},{y0},{x1},{y1}"
+            })
+
+# Save all results as CSV
+df = pd.DataFrame(results_data)
+df.to_csv("segmentation_results/mask_metadata.csv", index=False)
+
+print("✅ All masks and their metadata saved to `segmentation_results/` folder.")
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Ensure clean theme
+sns.set(style="whitegrid")
+
+# Line plot (if applicable)
+plt.figure(figsize=(10, 5))
+try:
+    sns.lineplot(data=df.select_dtypes(include='number'))
+    plt.title("Line Plot of Numeric Data")
+    plt.show()
+except:
+    print("Line plot failed. Possibly not enough numeric data.")
+
+# Bar plot
+try:
+    df.head().plot(kind='bar', figsize=(10, 5))
+    plt.title("Bar Plot of First 5 Rows")
+    plt.xlabel("Index")
+    plt.ylabel("Values")
+    plt.show()
+except:
+    print("Bar plot failed due to non-numeric values.")
+
+# Histogram
+try:
+    df.select_dtypes(include='number').hist(figsize=(12, 8), bins=20)
+    plt.suptitle("Histograms of Numerical Columns")
+    plt.show()
+except:
+    print("Histogram plot failed.")
+
+# Correlation heatmap
+try:
+    numeric_df = df.select_dtypes(include='number')
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(numeric_df.corr(), annot=True, cmap='coolwarm', fmt=".2f")
+    plt.title("Correlation Heatmap")
+    plt.show()
+except:
+    print("Heatmap failed. Probably not enough numeric data.")
